@@ -37,7 +37,7 @@ class GradeProcessor:
     def _find_font_path(self):
         """Tìm đường dẫn font Arial trên hệ thống."""
         possible_paths = [
-            "/content/todiem/arial.ttf",  # Đường dẫn cũ
+            "/content/todiemlhu/arial.ttf",  # Đường dẫn cũ
             "./arial.ttf",                # Thư mục hiện tại
             "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",  # Linux
             "C:/Windows/Fonts/arial.ttf"  # Windows
