@@ -31,6 +31,8 @@ class GradeProcessor:
         """Khởi tạo bộ xử lý điểm với đường dẫn font tùy chọn."""
         self.font_path = font_path or self._find_font_path()
         self._register_fonts()
+        ### THÊM ### Lưu trữ các file Excel đã đọc để tránh log trùng lặp
+        self.loaded_excel_files = set()
         
     def _find_font_path(self):
         """Tìm đường dẫn font Arial trên hệ thống."""
@@ -86,7 +88,10 @@ class GradeProcessor:
                              ("..." if len(invalid_scores) > 5 else ""))
             
             grades = dict(zip(df['Mã SV'], df['Điểm']))
-            logger.info(f"Đã đọc {len(grades)} sinh viên từ file Excel {excel_path}")
+            ### SỬA ### Chỉ ghi log số lượng sinh viên ở mức DEBUG và khi file chưa được đọc
+            if excel_path not in self.loaded_excel_files:
+                logger.debug(f"Đã đọc {len(grades)} sinh viên từ file Excel {excel_path}")
+                self.loaded_excel_files.add(excel_path)
             return grades
             
         except Exception as e:
@@ -172,7 +177,7 @@ class GradeProcessor:
                             y0 = word['top']
                             student_positions[text] = (x0, y0, page_num)
                             
-            logger.info(f"Đã tìm thấy {len(student_positions)} mã sinh viên trong PDF {pdf_path}")
+            ### SỬA ### Gộp log này vào add_grade_to_pdf
             return student_positions
             
         except Exception as e:
@@ -205,13 +210,14 @@ class GradeProcessor:
                 
             # Tính số sinh viên vắng
             total_students = len(student_positions)
-            absent_count = sum(1 for ma_sv in student_positions if ma_sv in grades and pd.isna(grades[ma_sv]))
-            logger.info(f"Tổng số: {total_students} sinh viên, vắng: {absent_count} sinh viên")
+            absent_count = sum(1 for ma_sv in student_positions 
+                             if (ma_sv in grades and pd.isna(grades[ma_sv])) or ma_sv not in grades)
             
             # Đếm số sinh viên không có trong Excel
             missing_students = sum(1 for ma_sv in student_positions if ma_sv not in grades)
-            if missing_students > 0:
-                logger.warning(f"Có {missing_students} mã SV trong PDF không có trong file Excel")
+            
+            # Danh sách lưu các mã SV được ghi "Vắng"
+            absent_students = []
             
             # Xử lý từng trang PDF
             for page_num in range(len(pdf_reader.pages)):
@@ -225,7 +231,7 @@ class GradeProcessor:
                     self._add_header_info(can, total_students, absent_count, info)
                 
                 # Thêm điểm cho sinh viên trong trang này
-                self._add_student_grades(can, student_positions, grades, page_num, column_x)
+                self._add_student_grades(can, student_positions, grades, page_num, column_x, absent_students)
                 
                 can.save()
                 packet.seek(0)
@@ -239,6 +245,17 @@ class GradeProcessor:
                 
                 pdf_writer.add_page(page)
             
+            ### SỬA ### Gộp log thành một khối duy nhất cho PDF
+            log_message = f"[PDF: {input_pdf}] Xử lý hoàn tất: {total_students} sinh viên, {absent_count} vắng"
+            if missing_students > 0:
+                log_message += f", {missing_students} mã SV không có trong Excel"
+            if absent_students:
+                log_message += f". Mã SV vắng: {', '.join(absent_students)}"
+            else:
+                log_message += ". Không có mã SV vắng"
+            log_message += f". Đã tạo file {output_pdf}"
+            logger.info(log_message)
+            
             # Lưu file kết quả
             output_dir = os.path.dirname(output_pdf)
             if output_dir and not os.path.exists(output_dir):
@@ -247,7 +264,6 @@ class GradeProcessor:
             with open(output_pdf, "wb") as output_file:
                 pdf_writer.write(output_file)
                 
-            logger.info(f"Đã tạo file {output_pdf} thành công")
             return True
             
         except Exception as e:
@@ -266,7 +282,7 @@ class GradeProcessor:
         except Exception as e:
             logger.error(f"Lỗi khi thêm thông tin header: {str(e)}")
     
-    def _add_student_grades(self, canvas, student_positions, grades, page_num, column_x):
+    def _add_student_grades(self, canvas, student_positions, grades, page_num, column_x, absent_students):
         """Thêm điểm cho sinh viên trong trang hiện tại."""
         for ma_sv_pdf, position in student_positions.items():
             if position[2] - 1 != page_num:
@@ -282,10 +298,19 @@ class GradeProcessor:
                 grade_text = self.convert_to_text(score)
                 canvas.drawString(x, y_adjusted, grade_text)
                 
+                # Lưu mã SV có điểm "Vắng" (NaN trong Excel)
+                if pd.isna(score):
+                    absent_students.append(ma_sv_pdf)
+                
                 if not pd.isna(score) and 0 <= score <= 10:
                     self._draw_score_circles(canvas, column_x, y_adjusted, score)
             else:
-                logger.debug(f"Mã SV {ma_sv_pdf} không có trong file Excel")
+                # Ghi "Vắng" cho mã SV không có trong Excel
+                logger.debug(f"Mã SV {ma_sv_pdf} không có trong file Excel, ghi 'Vắng'")
+                grade_text = "Vắng"
+                canvas.drawString(x, y_adjusted, grade_text)
+                # Lưu mã SV không có trong Excel vào danh sách vắng
+                absent_students.append(ma_sv_pdf)
     
     def _draw_score_circles(self, canvas, column_x, y_adjusted, score):
         """Vẽ các vòng tròn đánh dấu điểm."""
@@ -329,14 +354,19 @@ class GradeProcessor:
             
             # Kiểm tra các cột điểm
             available_types = []
+            created_files = []
             for grade_type, column in grade_columns.items():
                 if column in df.columns:
                     grade_df = df[['StudentID', column]].copy()
                     grade_df.columns = ['Mã SV', 'Điểm']
                     grade_file = f'grade_{grade_type}.xlsx'
                     grade_df.to_excel(grade_file, index=False)
-                    logger.info(f"Đã tạo file {grade_file} thành công")
+                    created_files.append(grade_file)
                     available_types.append(grade_type)
+            
+            ### SỬA ### Gộp log tạo file Excel
+            if created_files:
+                logger.info(f"Đã tạo các file Excel: {', '.join(created_files)}")
             
             if not available_types:
                 logger.error(f"Không tìm thấy cột điểm nào trong file Excel: {input_excel}")
@@ -390,10 +420,13 @@ class GradeProcessor:
                                 counter += 1
                                 
                             os.rename(file_path, new_file_path)
-                            logger.info(f"Đổi tên {file_name} thành {new_file_name}")
                             renamed_files[file_name] = new_file_name
             except Exception as e:
                 logger.error(f"Lỗi khi đổi tên file {file_name}: {str(e)}")
+        
+        ### SỬA ### Gộp log đổi tên file PDF
+        if renamed_files:
+            logger.info(f"Đã đổi tên các file PDF: {', '.join(f'{k} -> {v}' for k, v in renamed_files.items())}")
         
         return renamed_files
 
@@ -450,39 +483,50 @@ class GradeProcessor:
                     executor.submit(self.process_grade_type, directory, grade_type, info): grade_type 
                     for grade_type in available_types
                 }
+                results = {}
                 for future in concurrent.futures.as_completed(futures):
                     grade_type = futures[future]
                     try:
                         count = future.result()
-                        logger.info(f"Đã xử lý {count} file cho loại điểm {grade_type}")
+                        results[grade_type] = count
                     except Exception as e:
                         logger.error(f"Lỗi khi xử lý loại điểm {grade_type}: {str(e)}")
+                ### SỬA ### Gộp log xử lý các loại điểm
+                logger.info(f"Kết quả xử lý: {', '.join(f'{gt}: {count} file' for gt, count in results.items())}")
         else:
+            results = {}
             for grade_type in available_types:
                 count = self.process_grade_type(directory, grade_type, info)
-                logger.info(f"Đã xử lý {count} file cho loại điểm {grade_type}")
+                results[grade_type] = count
+            ### SỬA ### Gộp log xử lý các loại điểm
+            logger.info(f"Kết quả xử lý: {', '.join(f'{gt}: {count} file' for gt, count in results.items())}")
         
         return True
 
     def cleanup_files(self, directory, keep_originals=False):
         """Dọn dẹp các file tạm sau khi xử lý."""
         try:
+            deleted_files = []
             if not keep_originals:
                 # Xóa file PDF gốc (không có 'output' trong tên)
                 for file in os.listdir(directory):
                     file_path = os.path.join(directory, file)
                     if file.endswith('.pdf') and 'output' not in file.lower():
                         os.remove(file_path)
-                        logger.debug(f"Đã xóa file {file}")
+                        deleted_files.append(file)
             
             # Xóa file Excel tạm
             for file in os.listdir(directory):
                 file_path = os.path.join(directory, file)
                 if file.startswith('grade_') and file.endswith('.xlsx'):
                     os.remove(file_path)
-                    logger.debug(f"Đã xóa file {file}")
+                    deleted_files.append(file)
                     
-            logger.info("Đã dọn dẹp các file tạm")
+            ### SỬA ### Gộp log xóa file
+            if deleted_files:
+                logger.info(f"Đã xóa các file tạm: {', '.join(deleted_files)}")
+            else:
+                logger.info("Không có file tạm nào để xóa")
             return True
         except Exception as e:
             logger.error(f"Lỗi khi dọn dẹp file: {str(e)}")
