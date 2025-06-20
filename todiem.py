@@ -275,10 +275,10 @@ class GradeProcessor:
         try:
             canvas.drawString(125, 93.5, f"{total_students}")
             canvas.drawString(125, 75, f"{absent_count}")
-            canvas.drawCentredString(380, 52, f"{info['supervisor1']}")
-            canvas.drawCentredString(380, 15, f"{info['supervisor2']}")
-            canvas.drawCentredString(505, 52, f"{info['grader1']}")
-            canvas.drawCentredString(505, 15, f"{info['grader2']}")
+            canvas.drawCentredString(380, 55, f"{info['supervisor1']}")
+            canvas.drawCentredString(380, 18, f"{info['supervisor2']}")
+            canvas.drawCentredString(505, 55, f"{info['grader1']}")
+            canvas.drawCentredString(505, 18, f"{info['grader2']}")
         except Exception as e:
             logger.error(f"Lỗi khi thêm thông tin header: {str(e)}")
     
@@ -502,7 +502,7 @@ class GradeProcessor:
             logger.info(f"Kết quả xử lý: {', '.join(f'{gt}: {count} file' for gt, count in results.items())}")
         
         return True
-
+    
     def cleanup_files(self, directory, keep_originals=False):
         """Dọn dẹp các file tạm sau khi xử lý."""
         try:
